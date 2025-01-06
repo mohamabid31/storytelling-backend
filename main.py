@@ -32,7 +32,7 @@ app = FastAPI()
 # Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for testing. Restrict this in production.
+    allow_origins=["https://yourstoryworld-q33q0tv0c-mohammed-abids-projects.vercel.app/"],  # Allow all origins for testing. Restrict this in production.
     allow_methods=["*"],  # Allow all HTTP methods.
     allow_headers=["*"],  # Allow all headers.
 )
