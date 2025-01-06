@@ -46,10 +46,6 @@ app.add_middleware(
 )
 
 
-    allow_methods=["*"],  # Allow all HTTP methods.
-    allow_headers=["*"],  # Allow all headers.
-)
-
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     try:
