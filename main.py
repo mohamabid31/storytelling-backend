@@ -1,11 +1,6 @@
-
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-@app.get("/")
-def read_root():
-    return {"message": "Backend is running"}
-
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import openai
@@ -13,6 +8,15 @@ import requests
 import boto3
 import tempfile
 import os
+from typing import List, Optional
+
+# Initialize FastAPI app
+app = FastAPI()
+
+# Root route for testing
+@app.get("/")
+async def read_root():
+    return {"message": "Backend is running"}
 
 # Load environment variables from .env
 load_dotenv()
@@ -32,19 +36,16 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 # Set Pixabay API key
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY")
 
-app = FastAPI()
-
 # Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",  # Local front-end development
-        "https://yourstoryworld-q33q0tv0c-mohammed-abids-projects.vercel.app"  # Deployed front-end
+        "https://yourstoryworld-q33q0tv0c-mohammed-abids-projects.vercel.app",  # Deployed front-end
     ],
     allow_methods=["*"],  # Allow all HTTP methods
     allow_headers=["*"],  # Allow all headers
 )
-
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -56,9 +57,7 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
     return response
 
-
-from typing import List, Optional
-
+# Define data model for story generation
 class StoryRequest(BaseModel):
     genre: str
     characters: Optional[List[str]] = []
@@ -72,7 +71,6 @@ class StoryRequest(BaseModel):
 @app.post("/generate")
 async def generate_story(request: StoryRequest):
     try:
-        # Detect user country based on IP with robust error handling
         country = "UK"  # Default to UK
         try:
             ip_response = requests.get("http://ip-api.com/json/", timeout=5)
@@ -83,10 +81,7 @@ async def generate_story(request: StoryRequest):
         except requests.exceptions.RequestException as e:
             print(f"IP detection failed with error: {e}. Defaulting to UK.")
 
-        # Map country to language variation
         language = "British English" if country == "UK" else "American English"
-
-        # Construct the story prompt
         prompt = f"""Write a {request.length} {request.genre} story set in {request.setting or "any"}.
 It should include the following characters: {', '.join(request.characters or [])}.
 Themes: {', '.join(request.themes or [])}.
@@ -106,8 +101,6 @@ Guidelines:
 7. End the story with a positive and uplifting resolution.
 """
 
-
-        # Call the OpenAI API to generate the story
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
@@ -118,24 +111,16 @@ Guidelines:
             temperature=0.7,
         )
 
-        # Extract the title and story content
         full_story = response["choices"][0]["message"]["content"]
         title, story = full_story.split("\n", 1) if "\n" in full_story else ("Untitled", full_story)
 
-        # Clean up and format
-        title = title.strip()
-        story = story.strip()
-
-        return {"title": title, "story": story}
+        return {"title": title.strip(), "story": story.strip()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 @app.post("/generate_image")
 async def generate_image(query: dict):
     try:
-        # Construct the Pixabay API request URL
         pixabay_url = f"https://pixabay.com/api/?key={PIXABAY_API_KEY}&q={query['text']}&image_type=illustration&editors_choice=true&safesearch=true"
         response = requests.get(pixabay_url)
 
@@ -146,45 +131,32 @@ async def generate_image(query: dict):
         if data.get("hits"):
             return {"image_url": data["hits"][0]["webformatURL"]}
         else:
-            return {"image_url": "/images/default.png"}  # Return a default image if no results
+            return {"image_url": "/images/default.png"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/tts")
 async def text_to_speech(text: dict):
     try:
-        # Debug: Log input text
         print("Input text for TTS:", text["text"])
-
-        # Generate speech using Amazon Polly
         response = polly_client.synthesize_speech(
             Text=text["text"],
             OutputFormat="mp3",
-            VoiceId="Emma",  # You can change this to a different Polly voice
+            VoiceId="Emma",
         )
-
-        # Debug: Log Polly response metadata
-        print("Polly response metadata:", response.get("ResponseMetadata"))
-
-        # Check if AudioStream is present
         if "AudioStream" not in response or not response["AudioStream"]:
             raise Exception("AudioStream not present in Polly response.")
 
-        # Save the audio stream to a temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
             tmp_file.write(response["AudioStream"].read())
             audio_path = tmp_file.name
 
-        # Debug: Log the file path
         print("Generated audio file path:", audio_path)
-
         return FileResponse(audio_path, media_type="audio/mpeg")
     except Exception as e:
-        # Debug: Log the error
         print("Error in TTS:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
-
