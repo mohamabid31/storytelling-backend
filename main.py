@@ -41,7 +41,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",  # Local front-end development
-        "https://yourstoryworld-b5butm9af-mohammed-abids-projects.vercel.app",  # Deployed front-end
+        "https://https://yourstoryworld-b5butm9af-mohammed-abids-projects.vercel.app",  # Deployed front-end
     ],
     allow_methods=["*"],  # Allow all HTTP methods
     allow_headers=["*"],  # Allow all headers
