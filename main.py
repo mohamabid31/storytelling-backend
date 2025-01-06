@@ -2,6 +2,10 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+@app.get("/")
+def read_root():
+    return {"message": "Backend is running"}
+
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import openai
@@ -33,7 +37,12 @@ app = FastAPI()
 # Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://yourstoryworld-q33q0tv0c-mohammed-abids-projects.vercel.app"],  # Allow all origins for testing. Restrict this in production.
+    allow_origins=[
+    "https://yourstoryworld-q33q0tv0c-mohammed-abids-projects.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+]
+
     allow_methods=["*"],  # Allow all HTTP methods.
     allow_headers=["*"],  # Allow all headers.
 )
