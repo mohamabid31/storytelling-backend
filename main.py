@@ -96,13 +96,17 @@ DATABASE_URL = "postgresql://abid:yourstoryworld@localhost:5432/yourstoryworld"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# ✅ Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://localhost:3000",  # ✅ Allow local frontend
+        "https://yourstoryworld-imqyg0cm6-mohammed-abids-projects.vercel.app",  # ✅ Allow deployed frontend
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],  # ✅ Allow all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],  # ✅ Allow all headers
 )
+
 
 # ✅ Pydantic Schemas
 class StoryRequest(BaseModel):
