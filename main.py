@@ -173,10 +173,13 @@ async def generate_story(request: StoryRequest):
             characters = ", ".join([f"{c['name']} ({c['age']}): {c['description']}" for c in request.characterDetails])
             prompt += f" Characters: {characters}."
 
-        response = openai.client.chat.completions.create(
+    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+response = client.chat.completions.create(
     model="gpt-4-turbo",
     messages=[{"role": "user", "content": prompt}]
 )
+
 
 
         story = response["choices"][0]["message"]["content"]
