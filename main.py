@@ -4,6 +4,7 @@ import requests
 import boto3
 import logging
 import re
+import openai
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -173,8 +174,7 @@ async def generate_story(request: StoryRequest):
             characters = ", ".join([f"{c['name']} ({c['age']}): {c['description']}" for c in request.characterDetails])
             prompt += f" Characters: {characters}."
 
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+    openai.api_key = os.getenv("OPENAI_API_KEY")  # ✅ Correct way
 response = client.chat.completions.create(
     model="gpt-4-turbo",
     messages=[{"role": "user", "content": prompt}]
