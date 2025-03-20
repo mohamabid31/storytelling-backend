@@ -4,7 +4,6 @@ import requests
 import boto3
 import logging
 import re
-import openai
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -25,8 +24,6 @@ app = FastAPI()  # ✅ Define the app instance first
 
 # Serve static files (MP3s)
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
-import re
 
 import re
 
@@ -81,13 +78,14 @@ logger = logging.getLogger(__name__)
 # ✅ Load environment variables from .env file
 load_dotenv()
 
-# ✅ OpenAI API Key
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    logger.error("🚨 ERROR: OPENAI_API_KEY is NOT set. Check environment variables!")
+# ✅ Ensure the API key is loaded properly
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+if not openai.api_key:
+    raise ValueError("🚨 OpenAI API Key is missing! Check environment variables.")
 else:
-    logger.info(f"✅ API Key detected: {api_key[:5]}...********")
-openai.api_key = api_key
+    logger.info(f"✅ API Key detected: {openai.api_key[:5]}...********")
+
 
 # ✅ Pixabay API Key
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "YOUR_PIXABAY_API_KEY")
@@ -174,13 +172,11 @@ async def generate_story(request: StoryRequest):
             characters = ", ".join([f"{c['name']} ({c['age']}): {c['description']}" for c in request.characterDetails])
             prompt += f" Characters: {characters}."
 
-    openai.api_key = os.getenv("OPENAI_API_KEY")  # ✅ Correct way
-response = client.chat.completions.create(
-    model="gpt-4-turbo",
-    messages=[{"role": "user", "content": prompt}]
-)
-
-
+        # ✅ Correct OpenAI API call
+        response = openai.ChatCompletion.create(
+            model="gpt-4-turbo",
+            messages=[{"role": "user", "content": prompt}]
+        )
 
         story = response["choices"][0]["message"]["content"]
 
@@ -203,6 +199,7 @@ response = client.chat.completions.create(
     except Exception as e:
         logger.error(f"❌ Error generating story: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/generate_questions")
 async def generate_questions(request: QuestionRequest):
