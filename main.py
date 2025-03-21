@@ -99,7 +99,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",  # ✅ Allow local frontend
-        "https://yourstoryworld-imqyg0cm6-mohammed-abids-projects.vercel.app",  # ✅ Allow deployed frontend
+        "https://yourstoryworld-mohamabid31-yahoocouk-mohammed-abids-projects.vercel.app",  # ✅ Allow deployed frontend
     ],
     allow_credentials=True,
     allow_methods=["*"],  # ✅ Allow all HTTP methods (GET, POST, etc.)
