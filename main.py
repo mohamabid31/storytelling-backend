@@ -378,30 +378,30 @@ Story:
 
         processed_story = response["choices"][0]["message"]["content"].strip()
 
-        # ✅ Ensure title is on its own line, first sentence starts on next
+        # ✅ Force the title onto its own line if it's not already
         processed_story = re.sub(
-            r"^(Title[:\s]+[^\n\.]+)([\.])\s*(.*)",  # Capture title, period, and first sentence
-            r"\1\2\n\3",  # Place first sentence on a new line
+            r"^(Ti?-?tle[:\s]+.+?)(?=\s[A-Z])",
+            r"\1\n",
             processed_story,
             flags=re.IGNORECASE
         )
 
-        # ✅ Clean and split
+        # ✅ Clean and format the text
         processed_story = html.unescape(processed_story)
         processed_story = re.sub(r"<[^>]*>", "", processed_story)
         processed_story = re.sub(r"(font-weight|color|style)\s*:\s*[^;]+;?", "", processed_story, flags=re.IGNORECASE)
         processed_story = re.sub(r"[{}[\]<>]", "", processed_story)
         processed_story = re.sub(r"[^\w\s\.\,\-\':\*]+", "", processed_story)
         processed_story = re.sub(r"\s{2,}", " ", processed_story)
-        processed_story = re.sub(r"\.\s*", ".\n", processed_story.strip())  # One sentence per line
+        processed_story = re.sub(r"\.\s*", ".\n", processed_story.strip())  # Each sentence on new line
 
         # ✅ Remove any blank lines
         processed_story = "\n".join([line.strip() for line in processed_story.splitlines() if line.strip()])
 
         logger.info(f"✅ Cleaned Phonics Story Output:\n{processed_story}")
 
-        # ✅ Optional: Strip the title line if you want 1:1 alignment
-        title_match = re.search(r"Title:\s*(.+)", request.story)
+        # ✅ Optional: remove title line from phonics if you want alignment
+        title_match = re.search(r"Title:\s*(.+)", request.story, re.IGNORECASE)
         if title_match:
             actual_title = title_match.group(1).strip().lower()
             phonics_lines = processed_story.split("\n")
