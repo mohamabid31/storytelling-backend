@@ -376,37 +376,39 @@ Story:
             messages=[{"role": "user", "content": phonics_prompt}]
         )
 
-        # ✅ Extract and clean phonics story
         processed_story = response["choices"][0]["message"]["content"].strip()
 
-        # ✅ Sanitize story content
+        # ✅ Ensure title is on its own line before the story starts
+        processed_story = re.sub(
+            r"^(Title[:\s]+[^\n\.]+)[\.\s]+",  # Capture until first period or space after title
+            r"\1\n", 
+            processed_story,
+            flags=re.IGNORECASE
+        )
+
+        # ✅ Clean and split
         processed_story = html.unescape(processed_story)
         processed_story = re.sub(r"<[^>]*>", "", processed_story)
         processed_story = re.sub(r"(font-weight|color|style)\s*:\s*[^;]+;?", "", processed_story, flags=re.IGNORECASE)
-        processed_story = re.sub(r'[{}[\]<>]', '', processed_story)
-        processed_story = re.sub(r"[^\w\s\.\,\-\']+", "", processed_story)
+        processed_story = re.sub(r"[{}[\]<>]", "", processed_story)
+        processed_story = re.sub(r"[^\w\s\.\,\-\':\*]+", "", processed_story)
         processed_story = re.sub(r"\s{2,}", " ", processed_story)
+        processed_story = re.sub(r"\.\s*", ".\n", processed_story.strip())  # One sentence per line
+
+        # ✅ Remove any blank lines
         processed_story = "\n".join([line.strip() for line in processed_story.splitlines() if line.strip()])
 
         logger.info(f"✅ Cleaned Phonics Story Output:\n{processed_story}")
 
-        # ✅ Strip the title if it is the only thing on the first line
+        # ✅ Optional: Strip the title line if you want 1:1 alignment
         title_match = re.search(r"Title:\s*(.+)", request.story)
         if title_match:
-            actual_title = title_match.group(1).strip()
+            actual_title = title_match.group(1).strip().lower()
             phonics_lines = processed_story.split("\n")
-
             first_line = phonics_lines[0].strip().lower()
-            contains_only_title = (
-                first_line == f"title {actual_title.lower()}"
-                or first_line == f"title: {actual_title.lower()}"
-            )
-
-            if contains_only_title:
+            if actual_title in first_line.replace("title:", "").strip():
                 logger.info("✅ Removing title line from phonics story to maintain alignment.")
                 processed_story = "\n".join(phonics_lines[1:])
-
-        processed_story = re.sub(r'\.\s+', '.\n', processed_story)
 
         return {"phonicsStory": processed_story}
 
@@ -462,4 +464,5 @@ async def generate_phonics_tts(request: dict):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+
 
