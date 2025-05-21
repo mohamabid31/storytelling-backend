@@ -179,7 +179,6 @@ async def generate_story(request: StoryRequest):
             f"Write a {request.length}-word {request.genre} story for {request.ageGroup}. "
             f"The story should be about {request.storyDescription or 'an adventure'}. "
             f"{age_group_constraints.get(request.ageGroup, '')} "
-            f"{word_limits.get(request.length.lower(), 'Ensure the story is well-structured and engaging.')}"
             f"\n\nAt the start of the story, include a clear title on the first line, like this:"
             f"\nTitle: <Your Story Title>\n\n"
             f"At the end of the story, add '[Word Count: X]' where X is the actual number of words."
