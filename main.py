@@ -378,10 +378,10 @@ Story:
 
         processed_story = response["choices"][0]["message"]["content"].strip()
 
-        # ✅ Ensure title is on its own line before the story starts
+        # ✅ Ensure title is on its own line, first sentence starts on next
         processed_story = re.sub(
-            r"^(Title[:\s]+[^\n\.]+)[\.\s]+",  # Capture until first period or space after title
-            r"\1\n", 
+            r"^(Title[:\s]+[^\n\.]+)([\.])\s*(.*)",  # Capture title, period, and first sentence
+            r"\1\2\n\3",  # Place first sentence on a new line
             processed_story,
             flags=re.IGNORECASE
         )
