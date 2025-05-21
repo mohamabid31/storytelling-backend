@@ -3,6 +3,7 @@ import os
 import requests
 import boto3
 import logging
+import html
 import re
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -78,14 +79,13 @@ logger = logging.getLogger(__name__)
 # ✅ Load environment variables from .env file
 load_dotenv()
 
-# ✅ Ensure the API key is loaded properly
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-if not openai.api_key:
-    raise ValueError("🚨 OpenAI API Key is missing! Check environment variables.")
+# ✅ OpenAI API Key
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    logger.error("🚨 ERROR: OPENAI_API_KEY is NOT set. Check environment variables!")
 else:
-    logger.info(f"✅ API Key detected: {openai.api_key[:5]}...********")
-
+    logger.info(f"✅ API Key detected: {api_key[:5]}...********")
+openai.api_key = api_key
 
 # ✅ Pixabay API Key
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "YOUR_PIXABAY_API_KEY")
@@ -95,17 +95,13 @@ DATABASE_URL = "postgresql://abid:yourstoryworld@localhost:5432/yourstoryworld"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# ✅ Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # ✅ Allow local frontend
-        "https://yourstoryworld-8c22r8wj3-mohammed-abids-projects.vercel.app",  # ✅ Allow deployed frontend
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],  # ✅ Allow all HTTP methods (GET, POST, etc.)
-    allow_headers=["*"],  # ✅ Allow all headers
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-
 
 # ✅ Pydantic Schemas
 class StoryRequest(BaseModel):
@@ -137,32 +133,50 @@ def split_text(text, max_length=3000):
 async def generate_story(request: StoryRequest):
     try:
         logger.info("✅ Received a story generation request")
+        logger.info(f"🔍 Age Group: {request.ageGroup}")
+        logger.info(f"🔍 Length: {request.length}")
+
 
         # ✅ Define language rules per age group
         age_group_constraints = {
-            "3-5 years old": "Use only simple words (max 4-5 letters). Short sentences (5-8 words).",
+            "3-5 years old": "Ensure every sentence is **exactly 9 to 12 words long** and only using very simple words (4-5 letters max). Avoid complex dialogue or long paragraphs. Structure the story using short, simple lines but still make sense and logic.",
             "6-9 years old": "Use simple words, but introduce some new words. Sentences should be easy to read.",
             "10-13 years old": "Use richer vocabulary with descriptive sentences.",
             "14+ years old": "Use advanced vocabulary and complex sentence structures.",
         }
 
-        # ✅ Adjust word limit
-        word_limits = {
-            "short": "Make sure the story is **exactly 50 words**.",
-            "medium": "Keep the story between **150 and 250 words**.",
-            "long": "Keep the story between **400 and 600 words**."
+        # ✅ Define custom word count ranges for each age group and length
+        custom_word_limits = {
+            "3-5 years old": {
+                "short": "Make sure the story is exactly 50 words.",
+                "medium": "Keep the story between 150 and 250 words.",
+                "long": "Keep the story between 400 and 600 words.",
+            },
+            "6-9 years old": {
+                "short": "Make sure the story is around 150 words.",
+                "medium": "Keep the story between 250 and 350 words.",
+                "long": "Keep the story between 400 and 600 words.",
+            },
+            "10-13 years old": {
+                "short": "Make sure the story is around 250 words.",
+                "medium": "Keep the story between 350 and 550 words.",
+                "long": "Keep the story between 600 and 800 words.",
+            },
+            "14+ years old": {
+                "short": "Make sure the story is around 250 words.",
+                "medium": "Keep the story between 400 and 600 words.",
+                "long": "Keep the story between 800 and 950 words.",
+            },
         }
 
+
+# ✅ Get the matching word limit text
+        word_limit_instruction = custom_word_limits.get(request.ageGroup, {}).get(request.length.lower(), "")
+
+
         # ✅ Construct prompt
-        prompt = (
-            f"Write a {request.length}-word {request.genre} story for {request.ageGroup}. "
-            f"The story should be about {request.storyDescription or 'an adventure'}. "
-            f"{age_group_constraints.get(request.ageGroup, '')} "
-            f"{word_limits.get(request.length.lower(), 'Ensure the story is well-structured and engaging.')}"
-            f"\n\nAt the start of the story, include a clear title on the first line, like this:"
-            f"\nTitle: <Your Story Title>\n\n"
-            f"At the end of the story, add '[Word Count: X]' where X is the actual number of words."
-        )
+        prompt = request.storyDescription or "Write an engaging story for a child."
+
 
         if request.setting:
             prompt += f" The story takes place in {request.setting}."
@@ -172,11 +186,18 @@ async def generate_story(request: StoryRequest):
             characters = ", ".join([f"{c['name']} ({c['age']}): {c['description']}" for c in request.characterDetails])
             prompt += f" Characters: {characters}."
 
-        # ✅ Correct OpenAI API call
+        messages = []
+
+        # Add the user prompt
+        messages.append({"role": "user", "content": prompt})
+
+        # Now generate the story
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
-            messages=[{"role": "user", "content": prompt}]
+            messages=messages
         )
+
+
 
         story = response["choices"][0]["message"]["content"]
 
@@ -199,7 +220,6 @@ async def generate_story(request: StoryRequest):
     except Exception as e:
         logger.error(f"❌ Error generating story: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/generate_questions")
 async def generate_questions(request: QuestionRequest):
@@ -340,37 +360,56 @@ async def generate_phonics(request: QuestionRequest):
         logger.info("✅ Received a phonics processing request")
 
         phonics_prompt = f"""
-        Take the following story and highlight phonics elements:
-        - **Break words into syllables using dashes** (e.g., 'Ad-ven-ture').
-        - **Highlight phonics_map sounds/words ONLY**.
-        - **Return ONLY the cleaned story text—NO extra formatting, NO HTML, NO CSS.**
-        - **Ensure the output is plain text without additional metadata.**
+Take the following story and:
+- Retain the first line of the story, including the title if present.
+- Break words into syllables using dashes (e.g., 'Ad-ven-ture').
+- Wrap known phonics patterns ONLY in **double asterisks** (e.g., '**sh**ip', '**oa**k').
+- Do NOT use any HTML or CSS.
+- Return ONLY clean, plain text (no explanations, no metadata).
+- Maintain sentence structure exactly.
+Story:
+{request.story}
+"""
 
-        Story:
-        {request.story}
-        """
 
+
+# ✅ This was missing in your version
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
             messages=[{"role": "user", "content": phonics_prompt}]
         )
 
-        # ✅ Step 1: Extract Response
+        # ✅ Extract and clean phonics story
         processed_story = response["choices"][0]["message"]["content"].strip()
 
-        # ✅ Step 2: Clean Unwanted Formatting (Remove HTML, CSS, and Extra Tags)
-        processed_story = re.sub(r"<.*?>", "", processed_story)  # Remove HTML tags
-        processed_story = re.sub(r"\[.*?\]", "", processed_story)  # Remove bracketed text
-        processed_story = re.sub(r"\{.*?\}", "", processed_story)  # Remove curly-brace content
+        # ✅ Sanitize story content
+        processed_story = html.unescape(processed_story)
+        processed_story = re.sub(r"<[^>]*>", "", processed_story)  # Remove HTML tags
+        processed_story = re.sub(r"(font-weight|color|style)\s*:\s*[^;]+;?", "", processed_story, flags=re.IGNORECASE)
+        processed_story = re.sub(r'[{}[\]<>]', '', processed_story)  # Strip malformed brackets
+        processed_story = re.sub(r"[^\w\s\.\,\-\']+", "", processed_story)  # Remove non-word chars
+        processed_story = re.sub(r"\s{2,}", " ", processed_story)
+        processed_story = "\n".join([line.strip() for line in processed_story.splitlines() if line.strip()])
 
-        # ✅ Step 3: Log for Debugging
         logger.info(f"✅ Cleaned Phonics Story Output:\n{processed_story}")
+        
+        # ✅ Strip the title from phonics story if it matches the actual story title
+        title_match = re.search(r"Title:\s*(.+)", request.story)
+        if title_match:
+            actual_title = title_match.group(1).strip()
+            phonics_lines = processed_story.split("\n")
+            first_line = phonics_lines[0].strip().lower().replace("title:", "").strip()
+            if actual_title.lower() in first_line:
+                logger.info("✅ Removing title line from phonics story to maintain alignment.")
+                processed_story = "\n".join(phonics_lines[1:])
 
         return {"phonicsStory": processed_story}
+
 
     except Exception as e:
         logger.error(f"❌ Error generating phonics story: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/tts_phonics")
 async def generate_phonics_tts(request: dict):
