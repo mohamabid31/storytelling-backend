@@ -185,7 +185,6 @@ async def generate_story(request: StoryRequest):
         )
 
 
-
         if request.setting:
             prompt += f" The story takes place in {request.setting}."
         if request.themes:
@@ -408,21 +407,18 @@ Story:
 
         logger.info(f"✅ Cleaned Phonics Story Output:\n{processed_story}")
 
-        # ✅ Optional: remove title line from phonics if you want alignment
-        title_match = re.search(r"Title:\s*(.+)", request.story, re.IGNORECASE)
-        if title_match:
-            actual_title = title_match.group(1).strip().lower()
-            phonics_lines = processed_story.split("\n")
-            first_line = phonics_lines[0].strip().lower()
-            if actual_title in first_line.replace("title:", "").strip():
-                logger.info("✅ Removing title line from phonics story to maintain alignment.")
-                processed_story = "\n".join(phonics_lines[1:])
+        # ✅ Always remove the first line if it looks like a title (even without "Title:")
+        first_phonics_line = processed_story.split("\n")[0].strip().lower()
+        if "title" in first_phonics_line or len(first_phonics_line.split()) <= 6:
+            logger.info("✅ Removing first line from phonics to align with story.")
+            processed_story = "\n".join(processed_story.split("\n")[1:])
 
         return {"phonicsStory": processed_story}
 
     except Exception as e:
         logger.error(f"❌ Error generating phonics story: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
@@ -472,4 +468,5 @@ async def generate_phonics_tts(request: dict):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+
 
