@@ -403,6 +403,8 @@ Story:
                 logger.info("✅ Removing title line from phonics story to maintain alignment.")
                 processed_story = "\n".join(phonics_lines[1:])
 
+        processed_story = re.sub(r'\.\s+', '.\n', processed_story)
+
         return {"phonicsStory": processed_story}
 
 
