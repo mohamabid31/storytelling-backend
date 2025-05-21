@@ -361,7 +361,6 @@ async def generate_phonics(request: QuestionRequest):
 
         phonics_prompt = f"""
 Take the following story and:
-- Retain the first line of the story, including the title if present.
 - Break words into syllables using dashes (e.g., 'Ad-ven-ture').
 - Wrap known phonics patterns ONLY in **double asterisks** (e.g., '**sh**ip', '**oa**k').
 - Do NOT use any HTML or CSS.
@@ -464,5 +463,4 @@ async def generate_phonics_tts(request: dict):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
-
 
