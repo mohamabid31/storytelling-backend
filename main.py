@@ -175,7 +175,16 @@ async def generate_story(request: StoryRequest):
 
 
         # ✅ Construct prompt
-        prompt = request.storyDescription or "Write an engaging story for a child."
+        prompt = (
+            f"Write a {request.length}-word {request.genre} story for {request.ageGroup}. "
+            f"The story should be about {request.storyDescription or 'an adventure'}. "
+            f"{age_group_constraints.get(request.ageGroup, '')} "
+            f"{word_limits.get(request.length.lower(), 'Ensure the story is well-structured and engaging.')}"
+            f"\n\nAt the start of the story, include a clear title on the first line, like this:"
+            f"\nTitle: <Your Story Title>\n\n"
+            f"At the end of the story, add '[Word Count: X]' where X is the actual number of words."
+        )
+
 
 
         if request.setting:
@@ -361,6 +370,7 @@ async def generate_phonics(request: QuestionRequest):
 
         phonics_prompt = f"""
 Take the following story and:
+- Retain the first line of the story, including the title if present.
 - Break words into syllables using dashes (e.g., 'Ad-ven-ture').
 - Wrap known phonics patterns ONLY in **double asterisks** (e.g., '**sh**ip', '**oa**k').
 - Do NOT use any HTML or CSS.
