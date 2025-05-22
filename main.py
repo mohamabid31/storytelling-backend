@@ -136,8 +136,7 @@ async def generate_story(request: StoryRequest):
         logger.info(f"🔍 Age Group: {request.ageGroup}")
         logger.info(f"🔍 Length: {request.length}")
 
-
-        # ✅ Define language rules per age group
+        # ✅ Language rules per age group
         age_group_constraints = {
             "3-5 years old": "Ensure every sentence is **exactly 9 to 12 words long** and only using very simple words (4-5 letters max). Avoid complex dialogue or long paragraphs. Structure the story using short, simple lines but still make sense and logic.",
             "6-9 years old": "Use simple words, but introduce some new words. Sentences should be easy to read.",
@@ -145,7 +144,7 @@ async def generate_story(request: StoryRequest):
             "14+ years old": "Use advanced vocabulary and complex sentence structures.",
         }
 
-        # ✅ Define custom word count ranges for each age group and length
+        # ✅ Word count instructions
         custom_word_limits = {
             "3-5 years old": {
                 "short": "Make sure the story is exactly 50 words.",
@@ -169,21 +168,19 @@ async def generate_story(request: StoryRequest):
             },
         }
 
-
-# ✅ Get the matching word limit text
         word_limit_instruction = custom_word_limits.get(request.ageGroup, {}).get(request.length.lower(), "")
 
+        story_description = f"{request.storyDescription}\n" if request.storyDescription else "An adventure story.\n"
 
-        # ✅ Construct prompt
         prompt = (
             f"Write a {request.length}-word {request.genre} story for {request.ageGroup}. "
-            f"{request.storyDescription}\n" if request.storyDescription else "An adventure story."
+            f"{story_description}"
             f"{age_group_constraints.get(request.ageGroup, '')} "
+            f"{word_limit_instruction} "
             f"\n\nAt the start of the story, include a clear title on the first line, like this:"
             f"\nTitle: <Your Story Title>\n\n"
             f"At the end of the story, add '[Word Count: X]' where X is the actual number of words."
         )
-
 
         if request.setting:
             prompt += f" The story takes place in {request.setting}."
@@ -193,31 +190,23 @@ async def generate_story(request: StoryRequest):
             characters = ", ".join([f"{c['name']} ({c['age']}): {c['description']}" for c in request.characterDetails])
             prompt += f" Characters: {characters}."
 
-        messages = []
+        messages = [{"role": "user", "content": prompt}]
 
-        # Add the user prompt
-        messages.append({"role": "user", "content": prompt})
-
-        # Now generate the story
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
             messages=messages
         )
 
-
-
         story = response["choices"][0]["message"]["content"]
 
-        # ✅ Extract Title from AI Response
+        # ✅ Extract Title from Story
         title = "Generated Story"
         title_match = re.search(r"Title:\s*(.+)", story)
-
         if title_match:
             title = title_match.group(1).strip()
         else:
-            # If the title isn't explicitly labeled, assume the first line is the title
             first_line = story.split("\n")[0].strip()
-            if len(first_line) < 60 and " " in first_line:  # Make sure it's a reasonable title
+            if len(first_line) < 60 and " " in first_line:
                 title = first_line
 
         logger.info(f"✅ Extracted Story Title: {title}")
