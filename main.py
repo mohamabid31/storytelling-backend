@@ -378,42 +378,40 @@ Story:
 {request.story}
 """
 
+
+
+# ✅ This was missing in your version
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
             messages=[{"role": "user", "content": phonics_prompt}]
         )
 
+        # ✅ Extract and clean phonics story
         processed_story = response["choices"][0]["message"]["content"].strip()
 
-        # ✅ Force the title onto its own line if it's not already
-        processed_story = re.sub(
-            r"^(Ti?-?tle[:\s]+.+?)(?=\s[A-Z])",
-            r"\1\n",
-            processed_story,
-            flags=re.IGNORECASE
-        )
-
-        # ✅ Clean and format the text
+        # ✅ Sanitize story content
         processed_story = html.unescape(processed_story)
-        processed_story = re.sub(r"<[^>]*>", "", processed_story)
+        processed_story = re.sub(r"<[^>]*>", "", processed_story)  # Remove HTML tags
         processed_story = re.sub(r"(font-weight|color|style)\s*:\s*[^;]+;?", "", processed_story, flags=re.IGNORECASE)
-        processed_story = re.sub(r"[{}[\]<>]", "", processed_story)
-        processed_story = re.sub(r"[^\w\s\.\,\-\':\*]+", "", processed_story)
+        processed_story = re.sub(r'[{}[\]<>]', '', processed_story)  # Strip malformed brackets
+        processed_story = re.sub(r"[^\w\s\.\,\-\']+", "", processed_story)  # Remove non-word chars
         processed_story = re.sub(r"\s{2,}", " ", processed_story)
-        processed_story = re.sub(r"\.\s*", ".\n", processed_story.strip())  # Each sentence on new line
-
-        # ✅ Remove any blank lines
         processed_story = "\n".join([line.strip() for line in processed_story.splitlines() if line.strip()])
 
         logger.info(f"✅ Cleaned Phonics Story Output:\n{processed_story}")
-
-        # ✅ Always remove the first line if it looks like a title (even without "Title:")
-        first_phonics_line = processed_story.split("\n")[0].strip().lower()
-        if "title" in first_phonics_line or len(first_phonics_line.split()) <= 6:
-            logger.info("✅ Removing first line from phonics to align with story.")
-            processed_story = "\n".join(processed_story.split("\n")[1:])
+        
+        # ✅ Strip the title from phonics story if it matches the actual story title
+        title_match = re.search(r"Title:\s*(.+)", request.story)
+        if title_match:
+            actual_title = title_match.group(1).strip()
+            phonics_lines = processed_story.split("\n")
+            first_line = phonics_lines[0].strip().lower().replace("title:", "").strip()
+            if actual_title.lower() in first_line:
+                logger.info("✅ Removing title line from phonics story to maintain alignment.")
+                processed_story = "\n".join(phonics_lines[1:])
 
         return {"phonicsStory": processed_story}
+
 
     except Exception as e:
         logger.error(f"❌ Error generating phonics story: {e}")
