@@ -177,7 +177,7 @@ async def generate_story(request: StoryRequest):
         # ✅ Construct prompt
         prompt = (
             f"Write a {request.length}-word {request.genre} story for {request.ageGroup}. "
-            f"The story should be about {request.storyDescription or 'an adventure'}. "
+            f"{request.storyDescription}\n" if request.storyDescription else "An adventure story."
             f"{age_group_constraints.get(request.ageGroup, '')} "
             f"\n\nAt the start of the story, include a clear title on the first line, like this:"
             f"\nTitle: <Your Story Title>\n\n"
@@ -368,54 +368,27 @@ async def generate_phonics(request: QuestionRequest):
 
         phonics_prompt = f"""
 Take the following story and:
-- Retain the first line of the story, including the title if present.
 - Break words into syllables using dashes (e.g., 'Ad-ven-ture').
 - Wrap known phonics patterns ONLY in **double asterisks** (e.g., '**sh**ip', '**oa**k').
-- Do NOT use any HTML or CSS.
-- Return ONLY clean, plain text (no explanations, no metadata).
-- Maintain sentence structure exactly.
+- Return only plain text, no HTML or explanations.
 Story:
 {request.story}
 """
 
-
-
-# ✅ This was missing in your version
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
             messages=[{"role": "user", "content": phonics_prompt}]
         )
 
-        # ✅ Extract and clean phonics story
-        processed_story = response["choices"][0]["message"]["content"].strip()
+        phonics_story = response["choices"][0]["message"]["content"].strip()
+        logger.info(f"✅ Raw Phonics Story Returned:\n{phonics_story}")
 
-        # ✅ Sanitize story content
-        processed_story = html.unescape(processed_story)
-        processed_story = re.sub(r"<[^>]*>", "", processed_story)  # Remove HTML tags
-        processed_story = re.sub(r"(font-weight|color|style)\s*:\s*[^;]+;?", "", processed_story, flags=re.IGNORECASE)
-        processed_story = re.sub(r'[{}[\]<>]', '', processed_story)  # Strip malformed brackets
-        processed_story = re.sub(r"[^\w\s\.\,\-\']+", "", processed_story)  # Remove non-word chars
-        processed_story = re.sub(r"\s{2,}", " ", processed_story)
-        processed_story = "\n".join([line.strip() for line in processed_story.splitlines() if line.strip()])
-
-        logger.info(f"✅ Cleaned Phonics Story Output:\n{processed_story}")
-        
-        # ✅ Strip the title from phonics story if it matches the actual story title
-        title_match = re.search(r"Title:\s*(.+)", request.story)
-        if title_match:
-            actual_title = title_match.group(1).strip()
-            phonics_lines = processed_story.split("\n")
-            first_line = phonics_lines[0].strip().lower().replace("title:", "").strip()
-            if actual_title.lower() in first_line:
-                logger.info("✅ Removing title line from phonics story to maintain alignment.")
-                processed_story = "\n".join(phonics_lines[1:])
-
-        return {"phonicsStory": processed_story}
-
+        return {"phonicsStory": phonics_story}
 
     except Exception as e:
         logger.error(f"❌ Error generating phonics story: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
