@@ -1,38 +1,65 @@
-import openai
 import os
-import requests
-import boto3
-import logging
 import re
+import logging
 from io import BytesIO
+from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+import boto3
+import requests
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-
 from pydantic import BaseModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv
+from passlib.context import CryptContext
 
-from typing import List, Optional
+from models import User, Base
 
-# ------------------------------------------------------------------
-# FASTAPI INITIALISATION
-# ------------------------------------------------------------------
+# ✅ New OpenAI client
+from openai import OpenAI
+
+client = OpenAI()
+
+# -------------------------------------------------------------------
+# FastAPI app & static
+# -------------------------------------------------------------------
 
 app = FastAPI()
-
-# Serve static files (MP3 output)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Load environment
+# -------------------------------------------------------------------
+# Logging & environment
+# -------------------------------------------------------------------
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
-# ------------------------------------------------------------------
-# CORS – MUST INCLUDE YOUR PRODUCTION DOMAIN
-# ------------------------------------------------------------------
+# Just log that the key exists (value is managed by OpenAI client)
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    logger.error("🚨 ERROR: OPENAI_API_KEY is NOT set. Check environment variables!")
+else:
+    logger.info(f"✅ OPENAI_API_KEY detected (starts with): {api_key[:5]}…")
+
+PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "YOUR_PIXABAY_API_KEY")
+
+# -------------------------------------------------------------------
+# DB setup (kept for compatibility, even if not heavily used)
+# -------------------------------------------------------------------
+
+DATABASE_URL = "postgresql://abid:yourstoryworld@localhost:5432/yourstoryworld"
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# -------------------------------------------------------------------
+# CORS (includes production)
+# -------------------------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,49 +73,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ------------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------------
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# ------------------------------------------------------------------
-# OpenAI Setup
-# ------------------------------------------------------------------
-
-api_key = os.getenv("OPENAI_API_KEY")
-
-if not api_key:
-    logger.error("🚨 OPENAI_API_KEY missing.")
-else:
-    logger.info(f"🔑 OpenAI key loaded ({api_key[:5]}*******)")
-
-openai.api_key = api_key
-
-# ------------------------------------------------------------------
-# AWS POLLY
-# ------------------------------------------------------------------
+# -------------------------------------------------------------------
+# AWS Polly
+# -------------------------------------------------------------------
 
 polly = boto3.client("polly", region_name="eu-west-2")
 
-# ------------------------------------------------------------------
-# Pixabay
-# ------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
 
-PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "")
+def convert_to_ssml(word: str) -> str:
+    """
+    Convert a word into SSML for Polly with phoneme hints & syllable breaks.
+    (Not wired in yet, but kept for future phonics TTS work.)
+    """
+    phonics_map = {
+        "ai": "eɪ", "ay": "eɪ",
+        "ee": "iː", "ea": "iː", "ie": "iː",
+        "oa": "oʊ", "oe": "oʊ", "ue": "uː",
+        "ow": "aʊ", "ou": "aʊ",
+        "oi": "ɔɪ", "oy": "ɔɪ",
+        "ar": "ɑː", "er": "ɜːr", "ir": "ɜːr", "or": "ɔːr", "ur": "ɜːr",
+        "sh": "ʃ", "ch": "tʃ", "th": "θ", "wh": "w", "ph": "f",
+        "bl": "bl", "cl": "kl", "fl": "fl", "gl": "ɡl", "pl": "pl", "sl": "sl",
+        "br": "br", "cr": "kr", "dr": "dr", "fr": "fr", "gr": "ɡr", "pr": "pr", "tr": "tr",
+        "sc": "sk", "sk": "sk", "sm": "sm", "sn": "sn", "sp": "sp", "st": "st", "sw": "sw",
+        "qu": "kw",
+    }
 
-# ------------------------------------------------------------------
-# Database (Unused now but kept for compatibility)
-# ------------------------------------------------------------------
+    for phonics, ipa in phonics_map.items():
+        if phonics in word.lower():
+            word = word.replace(
+                phonics,
+                f"<phoneme alphabet='ipa' ph='{ipa}'>{phonics}</phoneme>",
+            )
 
-DATABASE_URL = "postgresql://abid:yourstoryworld@localhost:5432/yourstoryworld"
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    syllable_breaks = re.sub(
+        r"([aeiouy]{1,2})(?![^<>]*>)",
+        r"\1<break time='200ms'/>",
+        word,
+        flags=re.IGNORECASE,
+    )
+    return syllable_breaks
 
-# ------------------------------------------------------------------
-# GLOBAL CONSTANTS
-# ------------------------------------------------------------------
+
+def split_text(text: str, max_length: int = 3000):
+    """Split text into chunks for Polly."""
+    return [text[i : i + max_length] for i in range(0, len(text), max_length)]
+
+
+# -------------------------------------------------------------------
+# Global config: word-limits & safety
+# -------------------------------------------------------------------
 
 CUSTOM_WORD_LIMITS = {
     "3-5 years old": {
@@ -113,9 +150,16 @@ CUSTOM_WORD_LIMITS = {
     },
 }
 
-# ------------------------------------------------------------------
-# MODELS
-# ------------------------------------------------------------------
+SAFETY_BLOCK = (
+    "The story must be fully child-safe and age-appropriate. Do NOT include any violence, "
+    "gore, abuse, bullying, explicit or sexual content, nudity, self-harm, suicide, hate, "
+    "discrimination, drug use, unsafe stunts, horror, or anything frightening or traumatic. "
+    "No swearing or crude language. Keep the tone positive, kind, and encouraging."
+)
+
+# -------------------------------------------------------------------
+# Pydantic models
+# -------------------------------------------------------------------
 
 class StoryRequest(BaseModel):
     genre: str
@@ -141,264 +185,377 @@ class TTSRequest(BaseModel):
     text: str
 
 
-# ------------------------------------------------------------------
-# HELPERS
-# ------------------------------------------------------------------
-
-def split_text(text, max_length=3000):
-    return [text[i:i + max_length] for i in range(0, len(text), max_length)]
+class ModerateRequest(BaseModel):
+    text: str
 
 
-# ------------------------------------------------------------------
-# STORY GENERATION ENDPOINT
-# ------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Abuse / safety filter endpoint
+# -------------------------------------------------------------------
+
+@app.post("/moderate")
+async def moderate_text(request: ModerateRequest):
+    """
+    Simple abuse / NSFW / safety filter using OpenAI Moderation.
+    The frontend can call this explicitly if needed.
+    """
+    try:
+        text = (request.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Text is required for moderation.")
+
+        logger.info("🔍 Running moderation on input (truncated): %s", text[:200])
+
+        mod = client.moderations.create(
+            model="omni-moderation-latest",  # or "text-moderation-latest" depending on your setup
+            input=text,
+        )
+
+        result = mod.results[0]
+        return {
+            "flagged": result.flagged,
+            "categories": result.categories,
+            "category_scores": result.category_scores,
+        }
+    except Exception as e:
+        logger.error("❌ Moderation error: %s", e)
+        raise HTTPException(status_code=500, detail="Error running moderation.")
+
+
+# -------------------------------------------------------------------
+# Story generation (with safety + improved formatting)
+# -------------------------------------------------------------------
 
 @app.post("/generate")
 async def generate_story(request: StoryRequest):
     try:
-        logger.info("📘 Story request received")
+        logger.info("✅ Story request — ageGroup=%s, length=%s, genre=%s",
+                    request.ageGroup, request.length, request.genre)
 
-        age_rules = {
+        # Age-specific language constraints
+        age_group_constraints = {
             "3-5 years old": (
-                "Ensure every sentence is exactly 9–12 words long using only simple words "
-                "(4–5 letters max). Avoid complex dialogue."
+                "Ensure every sentence is exactly 9 to 12 words long and only uses very simple words "
+                "(about 4–5 letters). Avoid complex dialogue or long paragraphs. Keep each line short "
+                "and clear while still making sense."
             ),
-            "6-9 years old": "Use simple, clear sentences with some new vocabulary.",
-            "10-13 years old": "Use richer vocabulary and descriptive language.",
-            "14+ years old": "Use advanced vocabulary and complex structures.",
+            "6-9 years old": (
+                "Use simple words and short sentences. Introduce some new vocabulary but keep it easy to follow."
+            ),
+            "10-13 years old": "Use richer vocabulary with descriptive sentences and some dialogue.",
+            "14+ years old": "Use more advanced vocabulary and more complex sentence structures.",
         }
 
-        # Word-limit selection
         length_key = (request.length or "").lower()
         word_limit_instruction = CUSTOM_WORD_LIMITS.get(request.ageGroup, {}).get(length_key, "")
 
-        # Add story description if provided
-        description_text = (
-            f"{request.storyDescription}\n" if request.storyDescription else "An adventure story.\n"
+        story_description = (
+            f"{request.storyDescription}\n"
+            if request.storyDescription
+            else "An adventure story.\n"
         )
 
-        # Build prompt
+        # Build base prompt
         prompt = (
-            f"Write a {request.genre} story for {request.ageGroup}. "
-            f"{description_text}"
-            f"{age_rules.get(request.ageGroup, '')} "
+            f"Write a {request.genre} story for a child in the age group {request.ageGroup}. "
+            f"{story_description}"
+            f"{age_group_constraints.get(request.ageGroup, '')} "
+            f"{SAFETY_BLOCK} "
             f"{word_limit_instruction} "
-            "\n\nStart the story with a title like:\n"
-            "Title: <Your Story Title>\n\n"
-            "End the story with '[Word Count: X]'."
+            "\n\nFormatting rules:\n"
+            "1. The very first line must be the title in this format:\n"
+            "   Title: <Your Story Title>\n"
+            "2. Then add a blank line.\n"
+            "3. Then write the story as short paragraphs, separated by blank lines.\n"
+            "4. At the very end, add a line like: [Word Count: X] where X is the actual number of words.\n"
         )
 
         if request.setting:
-            prompt += f" The story takes place in {request.setting}."
-
+            prompt += f"\nThe story takes place in: {request.setting}."
         if request.themes:
-            prompt += f" Themes include: {', '.join(request.themes)}."
-
+            prompt += f"\nThemes to include: {', '.join(request.themes)}."
         if request.characterDetails:
             characters = ", ".join(
-                [f"{c['name']} ({c['age']}): {c['description']}" for c in request.characterDetails]
+                [
+                    f"{c.get('name', 'Unknown')} ({c.get('age', 'N/A')}): {c.get('description', '')}"
+                    for c in request.characterDetails
+                ]
             )
-            prompt += f" Characters: {characters}."
+            prompt += f"\nCharacters: {characters}."
 
-        # OpenAI call
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
-            messages=[{"role": "user", "content": prompt}]
+        if request.diversityMode:
+            prompt += (
+                "\nEnsure the story reflects diverse characters, cultures, and backgrounds in a natural, "
+                "positive and respectful way."
+            )
+
+        # 🔍 Log prompt for debugging (truncated)
+        logger.info("🧩 Story prompt (truncated): %s", prompt[:1000])
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # you can switch to gpt-4.1 / gpt-4o if enabled
+            messages=[{"role": "user", "content": prompt}],
         )
 
-        story = response["choices"][0]["message"]["content"]
+        story_raw = response.choices[0].message.content.strip()
 
-        # Extract title
+        # --- Post-processing / formatting cleanup ---
+        # Normalise line endings
+        story = story_raw.replace("\r\n", "\n").strip()
+
+        # Ensure title is on first line, and we capture it
         title = "Generated Story"
-        match = re.search(r"Title:\s*(.+)", story)
-        if match:
-            title = match.group(1).strip()
+        title_match = re.search(r"^Title:\s*(.+)", story, flags=re.IGNORECASE | re.MULTILINE)
+        if title_match:
+            title = title_match.group(1).strip()
         else:
-            first_line = story.split("\n")[0].strip()
-            if len(first_line) < 60:
+            first_line = story.split("\n", 1)[0].strip()
+            if len(first_line) < 80:
                 title = first_line
+
+        logger.info("✅ Extracted title: %s", title)
+
+        # Make sure there's a blank line after the title for consistent rendering
+        lines = story.split("\n")
+        if lines and lines[0].lower().startswith("title:") and (len(lines) == 1 or lines[1].strip() != ""):
+            # Insert blank line if not present
+            lines.insert(1, "")
+            story = "\n".join(lines)
 
         return {"story": story, "title": title}
 
     except Exception as e:
-        logger.error(f"❌ Story error: {e}")
+        logger.error("❌ Error generating story: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ------------------------------------------------------------------
-# COMPREHENSION QUESTIONS
-# ------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Comprehension questions
+# -------------------------------------------------------------------
 
 @app.post("/generate_questions")
 async def generate_questions(request: QuestionRequest):
     try:
-        prompt = f"""
-Generate 3 multiple-choice comprehension questions for this story.
-Each question MUST have options A, B, C and specify the correct one.
+        logger.info("✅ Question generation requested.")
+
+        questions_prompt = f"""
+Generate exactly 3 multiple-choice comprehension questions for the following story.
+Each question should have 3 answer choices (A, B, C) and one correct answer.
+
+Format each question as:
+Question: <question text>
+A) <answer choice>
+B) <answer choice>
+C) <answer choice>
+Correct Answer: <correct option (A, B, or C)>
 
 Story:
 {request.story}
 """
 
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
-            messages=[{"role": "user", "content": prompt}]
+        logger.info("🧩 Questions prompt (truncated): %s", questions_prompt[:800])
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": questions_prompt}],
         )
 
-        raw = response["choices"][0]["message"]["content"].strip()
-        blocks = raw.split("\n\n")
+        raw_questions = response.choices[0].message.content.strip()
+        questions_list = raw_questions.split("\n\n")
 
-        questions = []
-        answers = []
+        formatted_questions = []
+        correct_answers = []
 
-        for block in blocks:
-            if "Correct Answer:" in block:
-                q_text, ans = block.split("Correct Answer:")
-                ans = ans.strip()[0]
-                answers.append(ans)
-                questions.append(q_text.strip())
+        for q in questions_list:
+            if "Correct Answer:" in q:
+                question_part, correct_answer = q.split("Correct Answer:", 1)
+                correct_answer = correct_answer.strip().split()[0].replace(")", "")
+                correct_answers.append(correct_answer)
+            else:
+                question_part = q
+            formatted_questions.append(question_part.strip())
+
+        logger.info("✅ Questions generated: %d", len(formatted_questions))
+        logger.info("✅ Correct answers: %s", correct_answers)
 
         return {
-            "comprehensionQuestions": questions,
-            "correctAnswers": answers,
+            "comprehensionQuestions": formatted_questions,
+            "correctAnswers": correct_answers,
         }
 
     except Exception as e:
-        logger.error(f"❌ Question generation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ------------------------------------------------------------------
-# PIXABAY IMAGE FETCH
-# ------------------------------------------------------------------
-
-@app.post("/generate_image")
-async def generate_image(request: ImageRequest):
-    try:
-        query = request.text.strip() or "fantasy illustration"
-
-        url = (
-            f"https://pixabay.com/api/?key={PIXABAY_API_KEY}"
-            f"&q={query.replace(' ', '+')}"
-            f"&image_type=illustration&editors_choice=true&safesearch=true"
+        logger.error("❌ Error generating comprehension questions: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating comprehension questions: {str(e)}",
         )
 
-        r = requests.get(url)
-        data = r.json()
+
+# -------------------------------------------------------------------
+# Image generation via Pixabay
+# -------------------------------------------------------------------
+
+@app.post("/generate_image")
+async def generate_image(query: ImageRequest):
+    try:
+        search_query = (query.text or "").strip() or "fantasy illustration"
+
+        logger.info("🎨 Fetching image for: %s", search_query)
+
+        def pixabay_url(q: str) -> str:
+            return (
+                f"https://pixabay.com/api/?key={PIXABAY_API_KEY}"
+                f"&q={q.replace(' ', '+')}"
+                f"&image_type=illustration&editors_choice=true&safesearch=true"
+            )
+
+        response = requests.get(pixabay_url(search_query))
+        if response.status_code != 200:
+            raise Exception("Error fetching image from Pixabay API")
+
+        data = response.json()
 
         if not data.get("hits"):
-            return {"image_url": "/images/default.png"}
+            logger.warning("⚠️ No images found for '%s'. Trying 'fantasy scene'.", search_query)
+            response = requests.get(pixabay_url("fantasy scene"))
+            data = response.json()
 
-        return {"image_url": data["hits"][0]["webformatURL"]}
+        image_url = data["hits"][0]["webformatURL"] if data.get("hits") else "/images/default.png"
+        logger.info("✅ Image URL: %s", image_url)
+
+        return {"image_url": image_url}
 
     except Exception as e:
-        logger.error(f"❌ Image error: {e}")
+        logger.error("❌ Error fetching image: %s", e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ------------------------------------------------------------------
-# TEXT TO SPEECH (FULL STORY)
-# ------------------------------------------------------------------
+# -------------------------------------------------------------------
+# TTS (full story)
+# -------------------------------------------------------------------
 
 @app.post("/tts")
 async def text_to_speech(request: TTSRequest):
     try:
-        text = request.text.strip()
+        text = (request.text or "").strip()
         if not text:
-            raise ValueError("Missing text")
+            raise ValueError("Text input is missing or empty.")
 
-        chunks = split_text(text)
-        audio_parts = []
+        logger.info("🔊 TTS request (truncated): %s", text[:120])
 
-        for chunk in chunks:
-            r = polly.synthesize_speech(Text=chunk, OutputFormat="mp3", VoiceId="Joanna")
-            audio_parts.append(r["AudioStream"].read())
+        text_chunks = split_text(text, 3000)
+        audio_files = []
 
-        def stream():
-            for part in audio_parts:
-                yield part
+        for chunk in text_chunks:
+            response = polly.synthesize_speech(
+                Text=chunk,
+                OutputFormat="mp3",
+                VoiceId="Joanna",
+            )
+            if "AudioStream" in response:
+                audio_files.append(response["AudioStream"].read())
 
-        return StreamingResponse(stream(), media_type="audio/mpeg")
+        if not audio_files:
+            raise Exception("No audio generated from Polly.")
+
+        def generate_audio():
+            for audio in audio_files:
+                yield audio
+
+        return StreamingResponse(generate_audio(), media_type="audio/mpeg")
 
     except Exception as e:
-        logger.error(f"❌ TTS error: {e}")
+        logger.error("❌ TTS error: %s", e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ------------------------------------------------------------------
-# PHONICS STORY PROCESSING
-# ------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Phonics transformation
+# -------------------------------------------------------------------
 
 @app.post("/generate_phonics")
 async def generate_phonics(request: QuestionRequest):
     try:
-        prompt = f"""
-Rewrite this story with:
-- Words split into syllables using dashes (Ad-ven-ture)
-- Known phonics patterns wrapped in **double asterisks**
-Return ONLY the modified story.
+        logger.info("✅ Phonics transformation requested.")
+
+        phonics_prompt = f"""
+Take the following story and:
+- Break words into syllables using dashes (e.g., 'Ad-ven-ture').
+- Wrap known phonics patterns ONLY in **double asterisks** (e.g., '**sh**ip', '**oa**k').
+- Return only plain text, no HTML or explanations.
 
 Story:
 {request.story}
 """
 
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
-            messages=[{"role": "user", "content": prompt}]
+        logger.info("🧩 Phonics prompt (truncated): %s", phonics_prompt[:800])
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": phonics_prompt}],
         )
 
-        phonics = response["choices"][0]["message"]["content"].strip()
-        return {"phonicsStory": phonics}
+        phonics_story = response.choices[0].message.content.strip()
+        logger.info("✅ Phonics story generated (truncated): %s", phonics_story[:200])
+
+        return {"phonicsStory": phonics_story}
 
     except Exception as e:
-        logger.error(f"❌ Phonics error: {e}")
+        logger.error("❌ Error generating phonics story: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ------------------------------------------------------------------
-# PHONICS WORD-BY-WORD TTS
-# ------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Phonics TTS (single word)
+# -------------------------------------------------------------------
 
 @app.post("/tts_phonics")
 async def generate_phonics_tts(request: dict):
-    word = request.get("word", "").strip()
-    if not word:
-        raise HTTPException(400, "Missing word")
+    text = (request.get("word") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Missing word for pronunciation.")
 
     try:
         syllables = re.sub(
             r"([aeiouy]+[^aeiouy]*)",
             r"\1<break time='250ms'/>",
-            word,
-            flags=re.IGNORECASE
+            text,
+            flags=re.IGNORECASE,
         )
 
-        ssml = f"""
-<speak>
-    <prosody rate="slow">
-        {syllables}
-    </prosody>
-</speak>
-"""
+        phonics_ssml = f"""
+        <speak>
+            <prosody rate="slow">
+                {syllables}
+            </prosody>
+        </speak>
+        """.strip()
 
-        r = polly.synthesize_speech(
-            Text=ssml,
+        logger.info("🔍 Phonics SSML sent to Polly: %s", phonics_ssml)
+
+        response = polly.synthesize_speech(
+            Text=phonics_ssml,
             TextType="ssml",
             OutputFormat="mp3",
-            VoiceId="Joanna"
+            VoiceId="Joanna",
         )
 
-        return StreamingResponse(BytesIO(r["AudioStream"].read()), media_type="audio/mpeg")
+        audio_stream = response["AudioStream"].read()
+        audio_buffer = BytesIO(audio_stream)
+
+        return StreamingResponse(audio_buffer, media_type="audio/mpeg")
 
     except Exception as e:
-        logger.error(f"❌ Phonics TTS error: {e}")
+        logger.error("❌ Polly phonics TTS error: %s", e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ------------------------------------------------------------------
-# RUN SERVER (DEV ONLY)
-# ------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Local dev entrypoint
+# -------------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+
