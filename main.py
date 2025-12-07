@@ -3,98 +3,37 @@ import os
 import requests
 import boto3
 import logging
-import html
 import re
+from io import BytesIO
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
-from io import BytesIO
 from fastapi.staticfiles import StaticFiles
+
 from pydantic import BaseModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from passlib.context import CryptContext
-from typing import List, Optional
-
-from models import User, Base
 from dotenv import load_dotenv
 
-# ✅ Initialize FastAPI app
-app = FastAPI()  # ✅ Define the app instance first
+from typing import List, Optional
 
-# Serve static files (MP3s)
+# ------------------------------------------------------------------
+# FASTAPI INITIALISATION
+# ------------------------------------------------------------------
+
+app = FastAPI()
+
+# Serve static files (MP3 output)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-import re
-
-def convert_to_ssml(word):
-    """
-    Convert a word into SSML for Polly with:
-    - Natural pronunciation
-    - Syllable breaks
-    - Correct phoneme replacements without breaking SSML
-    """
-
-    phonics_map = {
-        "ai": "eɪ", "ay": "eɪ",
-        "ee": "iː", "ea": "iː", "ie": "iː",
-        "oa": "oʊ", "oe": "oʊ", "ue": "uː",
-        "ow": "aʊ", "ou": "aʊ",
-        "oi": "ɔɪ", "oy": "ɔɪ",
-        "ar": "ɑː", "er": "ɜːr", "ir": "ɜːr", "or": "ɔːr", "ur": "ɜːr",
-        "sh": "ʃ", "ch": "tʃ", "th": "θ", "wh": "w", "ph": "f",
-        "bl": "bl", "cl": "kl", "fl": "fl", "gl": "ɡl", "pl": "pl", "sl": "sl",
-        "br": "br", "cr": "kr", "dr": "dr", "fr": "fr", "gr": "ɡr", "pr": "pr", "tr": "tr",
-        "sc": "sk", "sk": "sk", "sm": "sm", "sn": "sn", "sp": "sp", "st": "st", "sw": "sw",
-        "qu": "kw"
-    }
-
-    # ✅ Step 1: Replace phonemes correctly
-    for phonics, ipa in phonics_map.items():
-        if phonics in word.lower():
-            word = word.replace(
-                phonics,
-                f"<phoneme alphabet='ipa' ph='{ipa}'>{phonics}</phoneme>"
-            )
-
-    # ✅ Step 2: Insert **syllable breaks** without affecting phonemes
-    # - Only apply breaks between vowels, **EXCEPT inside phoneme tags**.
-    syllable_breaks = re.sub(
-        r"([aeiouy]{1,2})(?![^<>]*>)",  # Avoid replacing inside <phoneme> tags
-        r"\1<break time='200ms'/>",
-        word,
-        flags=re.IGNORECASE
-    )
-
-    return syllable_breaks
-
-# ✅ Initialize Polly with a specific region
-polly = boto3.client("polly", region_name="eu-west-2")  # Ensure your AWS region is correct
-
-# ✅ Initialize logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# ✅ Load environment variables from .env file
+# Load environment
 load_dotenv()
 
-# ✅ OpenAI API Key
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    logger.error("🚨 ERROR: OPENAI_API_KEY is NOT set. Check environment variables!")
-else:
-    logger.info(f"✅ API Key detected: {api_key[:5]}...********")
-openai.api_key = api_key
+# ------------------------------------------------------------------
+# CORS – MUST INCLUDE YOUR PRODUCTION DOMAIN
+# ------------------------------------------------------------------
 
-# ✅ Pixabay API Key
-PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "YOUR_PIXABAY_API_KEY")
-
-# ✅ Database Setup
-DATABASE_URL = "postgresql://abid:yourstoryworld@localhost:5432/yourstoryworld"
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# ✅ Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -107,50 +46,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------
 
-# ✅ Pydantic Schemas
-class StoryRequest(BaseModel):
-    genre: str
-    setting: Optional[str] = None
-    themes: List[str] = []
-    length: str
-    ageGroup: str
-    storyDescription: Optional[str] = None
-    characterDetails: List[dict] = []
-    phonicsAligned: Optional[bool] = False
-    diversityMode: Optional[bool] = False
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-class QuestionRequest(BaseModel):
-    story: str
+# ------------------------------------------------------------------
+# OpenAI Setup
+# ------------------------------------------------------------------
 
-class ImageRequest(BaseModel):
-    text: str
+api_key = os.getenv("OPENAI_API_KEY")
 
-class TTSRequest(BaseModel):
-    text: str
+if not api_key:
+    logger.error("🚨 OPENAI_API_KEY missing.")
+else:
+    logger.info(f"🔑 OpenAI key loaded ({api_key[:5]}*******)")
 
-# ✅ Function to split text for Polly (if longer than 3000 characters)
-def split_text(text, max_length=3000):
-    return [text[i:i+max_length] for i in range(0, len(text), max_length)]
+openai.api_key = api_key
 
-# ✅ Story Generation Route
-@app.post("/generate")
-async def generate_story(request: StoryRequest):
-    try:
-        logger.info("✅ Received a story generation request")
-        logger.info(f"🔍 Age Group: {request.ageGroup}")
-        logger.info(f"🔍 Length: {request.length}")
+# ------------------------------------------------------------------
+# AWS POLLY
+# ------------------------------------------------------------------
 
-        # ✅ Language rules per age group
-        age_group_constraints = {
-            "3-5 years old": "Ensure every sentence is **exactly 9 to 12 words long** and only using very simple words (4-5 letters max). Avoid complex dialogue or long paragraphs. Structure the story using short, simple lines but still make sense and logic.",
-            "6-9 years old": "Use simple words, but introduce some new words. Sentences should be easy to read.",
-            "10-13 years old": "Use richer vocabulary with descriptive sentences.",
-            "14+ years old": "Use advanced vocabulary and complex sentence structures.",
-        }
+polly = boto3.client("polly", region_name="eu-west-2")
 
-        # ✅ Word count instructions
-custom_word_limits = {
+# ------------------------------------------------------------------
+# Pixabay
+# ------------------------------------------------------------------
+
+PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "")
+
+# ------------------------------------------------------------------
+# Database (Unused now but kept for compatibility)
+# ------------------------------------------------------------------
+
+DATABASE_URL = "postgresql://abid:yourstoryworld@localhost:5432/yourstoryworld"
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+# ------------------------------------------------------------------
+# GLOBAL CONSTANTS
+# ------------------------------------------------------------------
+
+CUSTOM_WORD_LIMITS = {
     "3-5 years old": {
         "short": "Make sure the story is exactly 50 words.",
         "medium": "Keep the story between 150 and 250 words.",
@@ -173,265 +113,292 @@ custom_word_limits = {
     },
 }
 
+# ------------------------------------------------------------------
+# MODELS
+# ------------------------------------------------------------------
 
-        word_limit_instruction = custom_word_limits.get(request.ageGroup, {}).get(request.length.lower(), "")
+class StoryRequest(BaseModel):
+    genre: str
+    setting: Optional[str] = None
+    themes: List[str] = []
+    length: str
+    ageGroup: str
+    storyDescription: Optional[str] = None
+    characterDetails: List[dict] = []
+    phonicsAligned: Optional[bool] = False
+    diversityMode: Optional[bool] = False
 
-        story_description = f"{request.storyDescription}\n" if request.storyDescription else "An adventure story.\n"
 
+class QuestionRequest(BaseModel):
+    story: str
+
+
+class ImageRequest(BaseModel):
+    text: str
+
+
+class TTSRequest(BaseModel):
+    text: str
+
+
+# ------------------------------------------------------------------
+# HELPERS
+# ------------------------------------------------------------------
+
+def split_text(text, max_length=3000):
+    return [text[i:i + max_length] for i in range(0, len(text), max_length)]
+
+
+# ------------------------------------------------------------------
+# STORY GENERATION ENDPOINT
+# ------------------------------------------------------------------
+
+@app.post("/generate")
+async def generate_story(request: StoryRequest):
+    try:
+        logger.info("📘 Story request received")
+
+        age_rules = {
+            "3-5 years old": (
+                "Ensure every sentence is exactly 9–12 words long using only simple words "
+                "(4–5 letters max). Avoid complex dialogue."
+            ),
+            "6-9 years old": "Use simple, clear sentences with some new vocabulary.",
+            "10-13 years old": "Use richer vocabulary and descriptive language.",
+            "14+ years old": "Use advanced vocabulary and complex structures.",
+        }
+
+        # Word-limit selection
+        length_key = (request.length or "").lower()
+        word_limit_instruction = CUSTOM_WORD_LIMITS.get(request.ageGroup, {}).get(length_key, "")
+
+        # Add story description if provided
+        description_text = (
+            f"{request.storyDescription}\n" if request.storyDescription else "An adventure story.\n"
+        )
+
+        # Build prompt
         prompt = (
             f"Write a {request.genre} story for {request.ageGroup}. "
-            f"{story_description}"
-            f"{age_group_constraints.get(request.ageGroup, '')} "
+            f"{description_text}"
+            f"{age_rules.get(request.ageGroup, '')} "
             f"{word_limit_instruction} "
-            f"\n\nAt the start of the story, include a clear title on the first line, like this:"
-            f"\nTitle: <Your Story Title>\n\n"
-            f"At the end of the story, add '[Word Count: X]' where X is the actual number of words."
+            "\n\nStart the story with a title like:\n"
+            "Title: <Your Story Title>\n\n"
+            "End the story with '[Word Count: X]'."
         )
 
         if request.setting:
             prompt += f" The story takes place in {request.setting}."
+
         if request.themes:
             prompt += f" Themes include: {', '.join(request.themes)}."
+
         if request.characterDetails:
-            characters = ", ".join([f"{c['name']} ({c['age']}): {c['description']}" for c in request.characterDetails])
+            characters = ", ".join(
+                [f"{c['name']} ({c['age']}): {c['description']}" for c in request.characterDetails]
+            )
             prompt += f" Characters: {characters}."
 
-        messages = [{"role": "user", "content": prompt}]
-
+        # OpenAI call
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
-            messages=messages
+            messages=[{"role": "user", "content": prompt}]
         )
 
         story = response["choices"][0]["message"]["content"]
 
-        # ✅ Extract Title from Story
+        # Extract title
         title = "Generated Story"
-        title_match = re.search(r"Title:\s*(.+)", story)
-        if title_match:
-            title = title_match.group(1).strip()
+        match = re.search(r"Title:\s*(.+)", story)
+        if match:
+            title = match.group(1).strip()
         else:
             first_line = story.split("\n")[0].strip()
-            if len(first_line) < 60 and " " in first_line:
+            if len(first_line) < 60:
                 title = first_line
-
-        logger.info(f"✅ Extracted Story Title: {title}")
 
         return {"story": story, "title": title}
 
     except Exception as e:
-        logger.error(f"❌ Error generating story: {e}")
+        logger.error(f"❌ Story error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# COMPREHENSION QUESTIONS
+# ------------------------------------------------------------------
 
 @app.post("/generate_questions")
 async def generate_questions(request: QuestionRequest):
     try:
-        logger.info("✅ Received a question generation request")
+        prompt = f"""
+Generate 3 multiple-choice comprehension questions for this story.
+Each question MUST have options A, B, C and specify the correct one.
 
-        questions_prompt = f"""
-        Generate exactly 3 multiple-choice comprehension questions for the following story.
-        Each question should have 3 answer choices (A, B, C) and one correct answer.
-
-        Format each question as:
-        Question: <question text>
-        A) <answer choice>
-        B) <answer choice>
-        C) <answer choice>
-        Correct Answer: <correct option (A, B, or C)>
-
-        Story:
-        {request.story}
-        """
-
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
-            messages=[{"role": "user", "content": questions_prompt}]
-        )
-
-        if "choices" in response and len(response["choices"]) > 0:
-            raw_questions = response["choices"][0]["message"]["content"].strip()
-            questions_list = raw_questions.split("\n\n")  # Splitting each question block
-
-            formatted_questions = []
-            correct_answers = []
-
-            for q in questions_list:
-                if "Correct Answer:" in q:
-                    question_part, correct_answer = q.split("Correct Answer:")
-                    correct_answer = correct_answer.strip().split()[0].replace(")", "")  # ✅ Fix: Remove ) if present
-                    correct_answers.append(correct_answer)
-                else:
-                    question_part = q
-
-                formatted_questions.append(question_part.strip())
-
-            logger.info(f"✅ Generated Questions: {formatted_questions}")
-            logger.info(f"✅ Correct Answers Extracted: {correct_answers}")  # 🔴 Log correct answers
-
-        else:
-            logger.warning("⚠️ No comprehension questions returned by OpenAI.")
-            formatted_questions = []
-            correct_answers = []
-
-        return {
-            "comprehensionQuestions": formatted_questions,
-            "correctAnswers": correct_answers  # ✅ Now only stores "A", "B", or "C"
-        }
-    except Exception as e:
-        logger.error(f"❌ Error generating comprehension questions: {e}")
-        raise HTTPException(status_code=500, detail=f"Error generating comprehension questions: {str(e)}")
-
-
-# ✅ Image Generation Route
-@app.post("/generate_image")
-async def generate_image(query: ImageRequest):
-    try:
-        search_query = query.text.strip()
-        if not search_query:
-            search_query = "fantasy illustration"  # Provide a default query
-
-        logger.info(f"🔍 Fetching image for: {search_query}")
-        # ✅ Make API request to Pixabay
-        pixabay_url = (
-            f"https://pixabay.com/api/?key={PIXABAY_API_KEY}"
-            f"&q={search_query.replace(' ', '+')}"
-            f"&image_type=illustration&editors_choice=true&safesearch=true"
-        )
-        response = requests.get(pixabay_url)
-
-        if response.status_code != 200:
-            raise Exception("Error fetching image from Pixabay API")
-
-        data = response.json()
-
-        # ✅ If no images found, try a fallback search
-        if not data.get("hits"):
-            logger.warning(f"⚠️ No images found for {search_query}. Trying 'fantasy scene'.")
-            fallback_url = (
-                f"https://pixabay.com/api/?key={PIXABAY_API_KEY}"
-                f"&q=fantasy+scene&image_type=illustration&editors_choice=true&safesearch=true"
-            )
-            response = requests.get(fallback_url)
-            data = response.json()
-
-        image_url = data["hits"][0]["webformatURL"] if data.get("hits") else "/images/default.png"
-        logger.info(f"✅ Image URL: {image_url}")
-
-        return {"image_url": image_url}
-
-    except Exception as e:
-        logger.error(f"❌ Error fetching image: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-@app.post("/tts")
-async def text_to_speech(request: TTSRequest):
-    try:
-        if not request.text.strip():
-            raise ValueError("Text input is missing or empty.")
-
-        logger.info(f"🔊 Processing TTS for text: {request.text[:100]}...")  # Debug log
-
-        text_chunks = split_text(request.text, 3000)
-        audio_files = []
-
-        for chunk in text_chunks:
-            response = polly.synthesize_speech(Text=chunk, OutputFormat="mp3", VoiceId="Joanna")
-
-            if "AudioStream" in response:
-                logger.info("✅ Polly successfully generated audio.")
-                audio_files.append(response["AudioStream"].read())  # ✅ FIXED INDENTATION HERE
-
-        if not audio_files:
-            raise Exception("No audio files generated.")
-
-        def generate_audio():
-            for audio in audio_files:
-                yield audio
-
-        return StreamingResponse(generate_audio(), media_type="audio/mpeg")
-
-    except Exception as e:
-        logger.error(f"❌ TTS Error: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-import re
-
-@app.post("/generate_phonics")
-async def generate_phonics(request: QuestionRequest):
-    try:
-        logger.info("✅ Received a phonics processing request")
-
-        phonics_prompt = f"""
-Take the following story and:
-- Break words into syllables using dashes (e.g., 'Ad-ven-ture').
-- Wrap known phonics patterns ONLY in **double asterisks** (e.g., '**sh**ip', '**oa**k').
-- Return only plain text, no HTML or explanations.
 Story:
 {request.story}
 """
 
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
-            messages=[{"role": "user", "content": phonics_prompt}]
+            messages=[{"role": "user", "content": prompt}]
         )
 
-        phonics_story = response["choices"][0]["message"]["content"].strip()
-        logger.info(f"✅ Raw Phonics Story Returned:\n{phonics_story}")
+        raw = response["choices"][0]["message"]["content"].strip()
+        blocks = raw.split("\n\n")
 
-        return {"phonicsStory": phonics_story}
+        questions = []
+        answers = []
+
+        for block in blocks:
+            if "Correct Answer:" in block:
+                q_text, ans = block.split("Correct Answer:")
+                ans = ans.strip()[0]
+                answers.append(ans)
+                questions.append(q_text.strip())
+
+        return {
+            "comprehensionQuestions": questions,
+            "correctAnswers": answers,
+        }
 
     except Exception as e:
-        logger.error(f"❌ Error generating phonics story: {e}")
+        logger.error(f"❌ Question generation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ------------------------------------------------------------------
+# PIXABAY IMAGE FETCH
+# ------------------------------------------------------------------
+
+@app.post("/generate_image")
+async def generate_image(request: ImageRequest):
+    try:
+        query = request.text.strip() or "fantasy illustration"
+
+        url = (
+            f"https://pixabay.com/api/?key={PIXABAY_API_KEY}"
+            f"&q={query.replace(' ', '+')}"
+            f"&image_type=illustration&editors_choice=true&safesearch=true"
+        )
+
+        r = requests.get(url)
+        data = r.json()
+
+        if not data.get("hits"):
+            return {"image_url": "/images/default.png"}
+
+        return {"image_url": data["hits"][0]["webformatURL"]}
+
+    except Exception as e:
+        logger.error(f"❌ Image error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ------------------------------------------------------------------
+# TEXT TO SPEECH (FULL STORY)
+# ------------------------------------------------------------------
+
+@app.post("/tts")
+async def text_to_speech(request: TTSRequest):
+    try:
+        text = request.text.strip()
+        if not text:
+            raise ValueError("Missing text")
+
+        chunks = split_text(text)
+        audio_parts = []
+
+        for chunk in chunks:
+            r = polly.synthesize_speech(Text=chunk, OutputFormat="mp3", VoiceId="Joanna")
+            audio_parts.append(r["AudioStream"].read())
+
+        def stream():
+            for part in audio_parts:
+                yield part
+
+        return StreamingResponse(stream(), media_type="audio/mpeg")
+
+    except Exception as e:
+        logger.error(f"❌ TTS error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ------------------------------------------------------------------
+# PHONICS STORY PROCESSING
+# ------------------------------------------------------------------
+
+@app.post("/generate_phonics")
+async def generate_phonics(request: QuestionRequest):
+    try:
+        prompt = f"""
+Rewrite this story with:
+- Words split into syllables using dashes (Ad-ven-ture)
+- Known phonics patterns wrapped in **double asterisks**
+Return ONLY the modified story.
+
+Story:
+{request.story}
+"""
+
+        response = openai.ChatCompletion.create(
+            model="gpt-4-turbo",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        phonics = response["choices"][0]["message"]["content"].strip()
+        return {"phonicsStory": phonics}
+
+    except Exception as e:
+        logger.error(f"❌ Phonics error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# PHONICS WORD-BY-WORD TTS
+# ------------------------------------------------------------------
 
 @app.post("/tts_phonics")
 async def generate_phonics_tts(request: dict):
-    text = request.get("word", "").strip()
-
-    if not text:
-        raise HTTPException(status_code=400, detail="Missing word for pronunciation.")
+    word = request.get("word", "").strip()
+    if not word:
+        raise HTTPException(400, "Missing word")
 
     try:
-        # ✅ Step 1: Split word into syllables for better enunciation
-        syllables = re.sub(r"([aeiouy]+[^aeiouy]*)", r"\1<break time='250ms'/>", text, flags=re.IGNORECASE)
+        syllables = re.sub(
+            r"([aeiouy]+[^aeiouy]*)",
+            r"\1<break time='250ms'/>",
+            word,
+            flags=re.IGNORECASE
+        )
 
-        # ✅ Step 2: Build SSML with slower speech and syllable breaks
-        phonics_ssml = f"""
-        <speak>
-            <prosody rate="slow">
-                {syllables}
-            </prosody>
-        </speak>
-        """
+        ssml = f"""
+<speak>
+    <prosody rate="slow">
+        {syllables}
+    </prosody>
+</speak>
+"""
 
-        # ✅ Step 3: Log SSML for debugging
-        logging.info(f"🔍 Phonics SSML Sent to Polly:\n{phonics_ssml}")
-
-        # ✅ Step 4: Request TTS from Polly
-        response = polly.synthesize_speech(
-            Text=phonics_ssml,
+        r = polly.synthesize_speech(
+            Text=ssml,
             TextType="ssml",
             OutputFormat="mp3",
             VoiceId="Joanna"
         )
 
-        # ✅ Step 5: Convert to audio stream and return
-        audio_stream = response["AudioStream"].read()
-        audio_buffer = BytesIO(audio_stream)
-
-        return StreamingResponse(audio_buffer, media_type="audio/mpeg")
+        return StreamingResponse(BytesIO(r["AudioStream"].read()), media_type="audio/mpeg")
 
     except Exception as e:
-        logging.error(f"❌ Polly TTS Error: {str(e)}")
+        logger.error(f"❌ Phonics TTS error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ✅ Start Server
+# ------------------------------------------------------------------
+# RUN SERVER (DEV ONLY)
+# ------------------------------------------------------------------
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
-
