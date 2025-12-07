@@ -98,7 +98,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # ✅ Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "https://www.yourstoryworld.com","https://yourstoryworld.com",],
     allow_methods=["*"],
     allow_headers=["*"],
 )
