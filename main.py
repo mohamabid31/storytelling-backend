@@ -98,7 +98,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # ✅ Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://www.yourstoryworld.com",],
+    allow_origins=["http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -146,26 +146,27 @@ async def generate_story(request: StoryRequest):
 
         # ✅ Word count instructions
         custom_word_limits = {
-            "3-5 years old": {
-                "short": "Make sure the story is exactly 50 words.",
-                "medium": "Keep the story between 150 and 250 words.",
-                "long": "Keep the story between 400 and 600 words.",
-            },
-            "6-9 years old": {
-                "short": "Make sure the story is around 150 words.",
-                "medium": "Keep the story between 250 and 350 words.",
-                "long": "Keep the story between 400 and 600 words.",
-            },
-            "10-13 years old": {
-                "short": "Make sure the story is around 250 words.",
-                "medium": "Keep the story between 350 and 550 words.",
-                "long": "Keep the story between 600 and 800 words.",
-            },
-            "14+ years old": {
-                "short": "Make sure the story is around 250 words.",
-                "medium": "Keep the story between 400 and 600 words.",
-                "long": "Keep the story between 800 and 950 words.",
-            },
+        "3-5 years old": {
+          short: "Make sure the story is exactly 50 words.",
+          medium: "Keep the story between 150 and 250 words.",
+          long: "Keep the story between 400 and 600 words.",
+        },
+        "6-9 years old": {
+          short: "Make sure the story is around 150 words.",
+          medium: "Keep the story between 400 and 600 words.",
+          long: "Keep the story between 700 and 850 words.",
+        },
+        "10-13 years old": {
+          short: "Make sure the story is around 400 words.",
+          medium: "Keep the story between 700 and 850 words.",
+          long: "Keep the story between 950 and 1100 words.",
+        },
+        "14+ years old": {
+          short: "Make sure the story is around 500 words.",
+          medium: "Keep the story between 800 and 950 words.",
+          long: "Keep the story between 1200 and 1400 words.",
+        },
+
         }
 
         word_limit_instruction = custom_word_limits.get(request.ageGroup, {}).get(request.length.lower(), "")
@@ -428,5 +429,3 @@ async def generate_phonics_tts(request: dict):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
-
-
