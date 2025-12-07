@@ -6,6 +6,7 @@ from typing import List, Optional
 
 import boto3
 import requests
+import openai
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,11 +18,6 @@ from sqlalchemy.orm import sessionmaker
 from passlib.context import CryptContext
 
 from models import User, Base
-
-# ✅ New OpenAI client
-from openai import OpenAI
-
-client = OpenAI()
 
 # -------------------------------------------------------------------
 # FastAPI app & static
@@ -39,17 +35,18 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Just log that the key exists (value is managed by OpenAI client)
+# OpenAI key for classic client
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     logger.error("🚨 ERROR: OPENAI_API_KEY is NOT set. Check environment variables!")
 else:
     logger.info(f"✅ OPENAI_API_KEY detected (starts with): {api_key[:5]}…")
+openai.api_key = api_key
 
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "YOUR_PIXABAY_API_KEY")
 
 # -------------------------------------------------------------------
-# DB setup (kept for compatibility, even if not heavily used)
+# DB setup (kept for compatibility)
 # -------------------------------------------------------------------
 
 DATABASE_URL = "postgresql://abid:yourstoryworld@localhost:5432/yourstoryworld"
@@ -190,7 +187,7 @@ class ModerateRequest(BaseModel):
 
 
 # -------------------------------------------------------------------
-# Abuse / safety filter endpoint
+# Abuse / safety filter endpoint (classic Moderation API)
 # -------------------------------------------------------------------
 
 @app.post("/moderate")
@@ -206,16 +203,16 @@ async def moderate_text(request: ModerateRequest):
 
         logger.info("🔍 Running moderation on input (truncated): %s", text[:200])
 
-        mod = client.moderations.create(
-            model="omni-moderation-latest",  # or "text-moderation-latest" depending on your setup
+        mod = openai.Moderation.create(
+            model="text-moderation-latest",
             input=text,
         )
 
-        result = mod.results[0]
+        result = mod["results"][0]
         return {
-            "flagged": result.flagged,
-            "categories": result.categories,
-            "category_scores": result.category_scores,
+            "flagged": result["flagged"],
+            "categories": result["categories"],
+            "category_scores": result["category_scores"],
         }
     except Exception as e:
         logger.error("❌ Moderation error: %s", e)
@@ -229,8 +226,12 @@ async def moderate_text(request: ModerateRequest):
 @app.post("/generate")
 async def generate_story(request: StoryRequest):
     try:
-        logger.info("✅ Story request — ageGroup=%s, length=%s, genre=%s",
-                    request.ageGroup, request.length, request.genre)
+        logger.info(
+            "✅ Story request — ageGroup=%s, length=%s, genre=%s",
+            request.ageGroup,
+            request.length,
+            request.genre,
+        )
 
         # Age-specific language constraints
         age_group_constraints = {
@@ -292,15 +293,14 @@ async def generate_story(request: StoryRequest):
         # 🔍 Log prompt for debugging (truncated)
         logger.info("🧩 Story prompt (truncated): %s", prompt[:1000])
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # you can switch to gpt-4.1 / gpt-4o if enabled
+        response = openai.ChatCompletion.create(
+            model="gpt-4-turbo",  # keep same as before; change if you like
             messages=[{"role": "user", "content": prompt}],
         )
 
-        story_raw = response.choices[0].message.content.strip()
+        story_raw = response["choices"][0]["message"]["content"].strip()
 
         # --- Post-processing / formatting cleanup ---
-        # Normalise line endings
         story = story_raw.replace("\r\n", "\n").strip()
 
         # Ensure title is on first line, and we capture it
@@ -318,7 +318,6 @@ async def generate_story(request: StoryRequest):
         # Make sure there's a blank line after the title for consistent rendering
         lines = story.split("\n")
         if lines and lines[0].lower().startswith("title:") and (len(lines) == 1 or lines[1].strip() != ""):
-            # Insert blank line if not present
             lines.insert(1, "")
             story = "\n".join(lines)
 
@@ -355,12 +354,12 @@ Story:
 
         logger.info("🧩 Questions prompt (truncated): %s", questions_prompt[:800])
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = openai.ChatCompletion.create(
+            model="gpt-4-turbo",
             messages=[{"role": "user", "content": questions_prompt}],
         )
 
-        raw_questions = response.choices[0].message.content.strip()
+        raw_questions = response["choices"][0]["message"]["content"].strip()
         questions_list = raw_questions.split("\n\n")
 
         formatted_questions = []
@@ -490,12 +489,12 @@ Story:
 
         logger.info("🧩 Phonics prompt (truncated): %s", phonics_prompt[:800])
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = openai.ChatCompletion.create(
+            model="gpt-4-turbo",
             messages=[{"role": "user", "content": phonics_prompt}],
         )
 
-        phonics_story = response.choices[0].message.content.strip()
+        phonics_story = response["choices"][0]["message"]["content"].strip()
         logger.info("✅ Phonics story generated (truncated): %s", phonics_story[:200])
 
         return {"phonicsStory": phonics_story}
@@ -558,4 +557,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
-
