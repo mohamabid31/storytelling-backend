@@ -5,11 +5,10 @@ import boto3
 import logging
 import html
 import re
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from io import BytesIO
-from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import create_engine
@@ -98,10 +97,16 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # ✅ Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://www.yourstoryworld.com","https://yourstoryworld.com",],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://yourstoryworld.com",
+        "https://www.yourstoryworld.com",
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ✅ Pydantic Schemas
 class StoryRequest(BaseModel):
@@ -145,36 +150,36 @@ async def generate_story(request: StoryRequest):
         }
 
         # ✅ Word count instructions
-        custom_word_limits = {
-        "3-5 years old": {
-          short: "Make sure the story is exactly 50 words.",
-          medium: "Keep the story between 150 and 250 words.",
-          long: "Keep the story between 400 and 600 words.",
-        },
-        "6-9 years old": {
-          short: "Make sure the story is around 150 words.",
-          medium: "Keep the story between 400 and 600 words.",
-          long: "Keep the story between 700 and 850 words.",
-        },
-        "10-13 years old": {
-          short: "Make sure the story is around 400 words.",
-          medium: "Keep the story between 700 and 850 words.",
-          long: "Keep the story between 950 and 1100 words.",
-        },
-        "14+ years old": {
-          short: "Make sure the story is around 500 words.",
-          medium: "Keep the story between 800 and 950 words.",
-          long: "Keep the story between 1200 and 1400 words.",
-        },
+custom_word_limits = {
+    "3-5 years old": {
+        "short": "Make sure the story is exactly 50 words.",
+        "medium": "Keep the story between 150 and 250 words.",
+        "long": "Keep the story between 400 and 600 words.",
+    },
+    "6-9 years old": {
+        "short": "Make sure the story is around 150 words.",
+        "medium": "Keep the story between 400 and 600 words.",
+        "long": "Keep the story between 700 and 850 words.",
+    },
+    "10-13 years old": {
+        "short": "Make sure the story is around 400 words.",
+        "medium": "Keep the story between 700 and 850 words.",
+        "long": "Keep the story between 950 and 1100 words.",
+    },
+    "14+ years old": {
+        "short": "Make sure the story is around 500 words.",
+        "medium": "Keep the story between 800 and 950 words.",
+        "long": "Keep the story between 1200 and 1400 words.",
+    },
+}
 
-        }
 
         word_limit_instruction = custom_word_limits.get(request.ageGroup, {}).get(request.length.lower(), "")
 
         story_description = f"{request.storyDescription}\n" if request.storyDescription else "An adventure story.\n"
 
         prompt = (
-            f"Write a {request.length}-word {request.genre} story for {request.ageGroup}. "
+            f"Write a {request.genre} story for {request.ageGroup}. "
             f"{story_description}"
             f"{age_group_constraints.get(request.ageGroup, '')} "
             f"{word_limit_instruction} "
@@ -429,3 +434,4 @@ async def generate_phonics_tts(request: dict):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+
