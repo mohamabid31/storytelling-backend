@@ -1,6 +1,8 @@
 import os
 import re
 import logging
+import json
+
 from io import BytesIO
 from typing import List, Optional
 
@@ -119,6 +121,73 @@ def split_text(text: str, max_length: int = 3000):
     """Split text into chunks for Polly."""
     return [text[i : i + max_length] for i in range(0, len(text), max_length)]
 
+def extract_story_body(story_text: str) -> str:
+    """Remove title + wordcount line to give cleaner content for vocab/questions."""
+    text = (story_text or "").replace("\r\n", "\n").strip()
+
+    # Remove title line if present
+    text = re.sub(r"^Title:\s*.*\n", "", text, flags=re.IGNORECASE)
+
+    # Remove trailing word count line like [Word Count: X]
+    text = re.sub(r"\n?\[Word Count:\s*\d+\]\s*$", "", text, flags=re.IGNORECASE)
+
+    return text.strip()
+
+
+def generate_vocabulary_wordbank(story: str, age_group: str) -> list:
+    """
+    Ask the model for an age-appropriate vocabulary bank as strict JSON.
+    Returns a list of vocab items. If anything fails, returns [] (never breaks /generate).
+    """
+    cfg = VOCAB_CONFIG.get(age_group, {"count": 6, "tier2": 4, "tier3": 2, "max_word_len": 14})
+    body = extract_story_body(story)
+
+    prompt = f"""
+You are generating a vocabulary word bank for learners in age group: {age_group}.
+
+Rules:
+- Choose exactly {cfg["count"]} target words from the story.
+- Aim for about {cfg["tier2"]} Tier 2 words and {cfg["tier3"]} Tier 3 words.
+- Keep words age-appropriate and not scary/violent.
+- Words should appear in the story text.
+- Word length guidance: try not to exceed ~{cfg["max_word_len"]} letters unless truly necessary.
+
+Return STRICT JSON only, no commentary, no markdown, in this exact format:
+{{
+  "targetVocabulary": [
+    {{
+      "word": "string",
+      "tier": "tier2" or "tier3",
+      "definition": "1 short learner-friendly sentence",
+      "exampleFromStory": "a short quote or sentence fragment from the story that contains the word",
+      "synonyms": ["syn1","syn2"]
+    }}
+  ]
+}}
+
+Story:
+{body}
+""".strip()
+
+    try:
+        resp = openai.ChatCompletion.create(
+            model="gpt-4-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+        )
+        raw = resp["choices"][0]["message"]["content"].strip()
+
+        # Extract JSON block if extra text sneaks in
+        json_match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        json_text = json_match.group(0) if json_match else raw
+
+        data = json.loads(json_text)
+        return data.get("targetVocabulary", []) or []
+    except Exception as e:
+        logger.warning("⚠️ Vocabulary generation failed (non-blocking): %s", e)
+        return []
+
+
 
 # -------------------------------------------------------------------
 # Global config: word-limits & safety
@@ -147,6 +216,25 @@ CUSTOM_WORD_LIMITS = {
     },
 }
 
+# -------------------------------------------------------------------
+# Vocabulary + Question configuration (backwards compatible)
+# -------------------------------------------------------------------
+
+VOCAB_CONFIG = {
+    "3-5 years old": {"count": 3, "tier2": 3, "tier3": 0, "max_word_len": 6},
+    "6-9 years old": {"count": 5, "tier2": 5, "tier3": 0, "max_word_len": 10},
+    "10-13 years old": {"count": 7, "tier2": 5, "tier3": 2, "max_word_len": 14},
+    "14+ years old": {"count": 10, "tier2": 7, "tier3": 3, "max_word_len": 18},
+}
+
+QUESTION_TIERING = {
+    "3-5 years old": ["literal"],
+    "6-9 years old": ["literal", "vocab_in_context"],
+    "10-13 years old": ["literal", "inferential", "vocab_in_context"],
+    "14+ years old": ["inferential", "evidence_based", "analysis", "vocab_in_context"],
+}
+
+
 SAFETY_BLOCK = (
     "The story must be fully child-safe and age-appropriate. Do NOT include any violence, "
     "gore, abuse, bullying, explicit or sexual content, nudity, self-harm, suicide, hate, "
@@ -172,6 +260,15 @@ class StoryRequest(BaseModel):
 
 class QuestionRequest(BaseModel):
     story: str
+    ageGroup: Optional[str] = None
+    questionMode: Optional[str] = "multiple_choice"  # "multiple_choice" or "constructed_response"
+    numQuestions: Optional[int] = 3
+    includeMarkScheme: Optional[bool] = True
+
+class MarkAnswerRequest(BaseModel):
+    answer: str
+    answerGuidance: dict  # contains keyPoints / acceptableKeywords / exampleAnswer
+
 
 
 class ImageRequest(BaseModel):
@@ -321,7 +418,11 @@ async def generate_story(request: StoryRequest):
             lines.insert(1, "")
             story = "\n".join(lines)
 
-        return {"story": story, "title": title}
+        # ✅ NEW (non-breaking): vocabulary word bank for a collapsible panel on frontend
+        vocabulary = generate_vocabulary_wordbank(story, request.ageGroup)
+
+        return {"story": story, "title": title, "vocabulary": vocabulary}
+
 
     except Exception as e:
         logger.error("❌ Error generating story: %s", e)
@@ -337,9 +438,77 @@ async def generate_questions(request: QuestionRequest):
     try:
         logger.info("✅ Question generation requested.")
 
+        age_group = request.ageGroup or "6-9 years old"
+        mode = (request.questionMode or "multiple_choice").strip().lower()
+        n = int(request.numQuestions or 3)
+        n = max(1, min(n, 10))  # clamp
+        tiers = QUESTION_TIERING.get(age_group, ["literal", "inferential"])
+        story_body = extract_story_body(request.story)
+
+        # -------------------------------
+        # Constructed response mode (NEW)
+        # -------------------------------
+        if mode == "constructed_response":
+            questions_prompt = f"""
+Generate exactly {n} comprehension questions for learners in age group: {age_group}.
+Use a mix of these question tiers (vary them): {", ".join(tiers)}.
+
+Rules:
+- Questions must be based ONLY on the story below.
+- Questions must be age-appropriate and non-frightening.
+- Output MUST be STRICT JSON ONLY (no markdown, no commentary).
+
+Return JSON in this exact format:
+{{
+  "questions": [
+    {{
+      "id": 1,
+      "tier": "literal | inferential | evidence_based | vocab_in_context | analysis | opinion_justified",
+      "question": "string",
+      "type": "constructed_response",
+      "answerGuidance": {{
+        "keyPoints": ["point1","point2"],
+        "exampleAnswer": "2–4 sentence model answer"
+      }}
+    }}
+  ]
+}}
+
+Story:
+{story_body}
+""".strip()
+
+            logger.info("🧩 Constructed response prompt (truncated): %s", questions_prompt[:800])
+
+            response = openai.ChatCompletion.create(
+                model="gpt-4-turbo",
+                messages=[{"role": "user", "content": questions_prompt}],
+                temperature=0.4,
+            )
+
+            raw = response["choices"][0]["message"]["content"].strip()
+            json_match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+            json_text = json_match.group(0) if json_match else raw
+            data = json.loads(json_text)
+
+            questions = data.get("questions", []) or []
+
+            # ✅ Keep response shape stable: still return comprehensionQuestions key
+            # (frontend can detect objects vs strings)
+            return {
+                "mode": "constructed_response",
+                "comprehensionQuestions": questions,
+                "correctAnswers": [],
+            }
+
+        # --------------------------------
+        # Default: MULTIPLE CHOICE (legacy)
+        # --------------------------------
         questions_prompt = f"""
-Generate exactly 3 multiple-choice comprehension questions for the following story.
+Generate exactly {n} multiple-choice comprehension questions for the following story.
 Each question should have 3 answer choices (A, B, C) and one correct answer.
+
+Use a mix of these question tiers (vary them): {", ".join(tiers)}.
 
 Format each question as:
 Question: <question text>
@@ -349,7 +518,7 @@ C) <answer choice>
 Correct Answer: <correct option (A, B, or C)>
 
 Story:
-{request.story}
+{story_body}
 """
 
         logger.info("🧩 Questions prompt (truncated): %s", questions_prompt[:800])
@@ -378,6 +547,7 @@ Story:
         logger.info("✅ Correct answers: %s", correct_answers)
 
         return {
+            "mode": "multiple_choice",
             "comprehensionQuestions": formatted_questions,
             "correctAnswers": correct_answers,
         }
@@ -388,6 +558,84 @@ Story:
             status_code=500,
             detail=f"Error generating comprehension questions: {str(e)}",
         )
+
+
+@app.post("/mark_constructed_answer")
+async def mark_constructed_answer(request: MarkAnswerRequest):
+    """
+    Temporary auto-marking for constructed responses (until teacher marking is added).
+    Deterministic: keyword/keypoint coverage scoring.
+    """
+    try:
+        answer = (request.answer or "").strip().lower()
+        guidance = request.answerGuidance or {}
+
+        key_points = guidance.get("keyPoints", []) or []
+        keywords = guidance.get("acceptableKeywords", []) or []
+
+        # Safety: if student submits nothing (or nearly nothing)
+        if len(answer) < 3:
+            return {
+                "score": 0,
+                "maxScore": 3,
+                "feedback": "Try writing a full sentence that answers the question.",
+                "matched": [],
+                "missing": key_points,
+            }
+
+        matched = []
+        missing = []
+
+        # Check key points by simple substring match
+        for kp in key_points:
+            kp_l = str(kp).lower().strip()
+            if kp_l and kp_l in answer:
+                matched.append(kp)
+            else:
+                missing.append(kp)
+
+        # Extra support: keyword hits (helps when keyPoints are more conceptual)
+        keyword_hits = 0
+        for kw in keywords:
+            kw_l = str(kw).lower().strip()
+            if kw_l and kw_l in answer:
+                keyword_hits += 1
+
+        # Scoring heuristic: map coverage to 0..3
+        total_points = max(1, len(key_points))
+        coverage = len(matched) / total_points  # 0..1
+
+        if coverage >= 0.75:
+            score = 3
+        elif coverage >= 0.40:
+            score = 2
+        elif coverage > 0 or keyword_hits >= 1:
+            score = 1
+        else:
+            score = 0
+
+        # Feedback
+        if score == 3:
+            feedback = "Strong answer — you included the main ideas clearly."
+        elif score == 2:
+            feedback = "Good answer — you have most of it. Try adding one more key detail."
+        elif score == 1:
+            feedback = "Nice start — try including more key details from the story."
+        else:
+            feedback = "Try again — use information from the story and answer in a full sentence."
+
+        return {
+            "score": score,
+            "maxScore": 3,
+            "feedback": feedback,
+            "matched": matched,
+            "missing": missing,
+        }
+
+    except Exception as e:
+        logger.error("❌ Error marking constructed answer: %s", e)
+        raise HTTPException(status_code=500, detail="Error marking constructed answer.")
+
 
 
 # -------------------------------------------------------------------
@@ -557,3 +805,4 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+
